@@ -430,8 +430,8 @@ fn extract_file_inner<R: Read>(
         .ok_or_else(|| std::io::Error::new(ErrorKind::Unsupported, "path not safe to extract"))?;
     let display_name = name.display().to_string();
     let out_path = match output_directory {
-        Some(output_directory) => output_directory.join(name),
-        None => name,
+        Some(output_directory) => output_directory.join(&*name),
+        None => name.to_path_buf(),
     };
     progress_reporter.extraction_starting(&display_name);
     log::debug!(
@@ -446,55 +446,90 @@ fn extract_file_inner<R: Read>(
         if let Some(parent) = out_path.parent() {
             directory_creator.create_dir_all(parent)?;
         }
-        let out_file = File::create(&out_path).map_err(|e| RipunzipErrors::IOErrorWithContext {
-            context: format!("Failed to create file {}", out_path.display()),
-            source: e,
-        })?;
-        // Progress bar strategy. The overall progress across the entire zip file must be
-        // denoted in terms of *compressed* bytes, since at the outset we don't know the uncompressed
-        // size of each file. Yet, within a given file, we update progress based on the bytes
-        // of uncompressed data written, once per 1MB, because that's the information that we happen
-        // to have available. So, calculate how many compressed bytes relate to 1MB of uncompressed
-        // data, and the remainder.
-        let uncompressed_size = file.size();
-        let compressed_size = file.compressed_size();
-        let mut progress_updater = ProgressUpdater::new(
-            |external_progress| {
-                progress_reporter.bytes_extracted(external_progress);
-            },
-            compressed_size,
-            uncompressed_size,
-            1024 * 1024,
-        );
-        let mut out_file = progress_streams::ProgressWriter::new(out_file, |bytes_written| {
-            progress_updater.progress(bytes_written as u64)
-        });
-        // Using a BufWriter here doesn't improve performance even on a VM with
-        // spinny disks.
-        if let Err(e) = std::io::copy(&mut file, &mut out_file) {
-            return Err(RipunzipErrors::IOErrorWithContext {
-                context: format!("Failed to write directory {:?}", out_file.into_inner()),
-                source: e,
+        let is_symlink = {
+            #[cfg(unix)]
+            {
+                file.is_symlink()
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        };
+        if is_symlink {
+            #[cfg(unix)]
+            {
+                let mut target = String::new();
+                file.read_to_string(&mut target)
+                    .map_err(|e| RipunzipErrors::IOErrorWithContext {
+                        context: format!("Failed to read symlink target for {}", out_path.display()),
+                        source: e,
+                    })?;
+                if let Err(e) = std::os::unix::fs::symlink(&target, &out_path) {
+                    return Err(RipunzipErrors::IOErrorWithContext {
+                        context: format!(
+                            "Failed to create symlink {} -> {}",
+                            out_path.display(),
+                            target
+                        ),
+                        source: e,
+                    });
+                }
+            }
+        } else {
+            let out_file =
+                File::create(&out_path).map_err(|e| RipunzipErrors::IOErrorWithContext {
+                    context: format!("Failed to create file {}", out_path.display()),
+                    source: e,
+                })?;
+            // Progress bar strategy. The overall progress across the entire zip file must be
+            // denoted in terms of *compressed* bytes, since at the outset we don't know the uncompressed
+            // size of each file. Yet, within a given file, we update progress based on the bytes
+            // of uncompressed data written, once per 1MB, because that's the information that we happen
+            // to have available. So, calculate how many compressed bytes relate to 1MB of uncompressed
+            // data, and the remainder.
+            let uncompressed_size = file.size();
+            let compressed_size = file.compressed_size();
+            let mut progress_updater = ProgressUpdater::new(
+                |external_progress| {
+                    progress_reporter.bytes_extracted(external_progress);
+                },
+                compressed_size,
+                uncompressed_size,
+                1024 * 1024,
+            );
+            let mut out_file = progress_streams::ProgressWriter::new(out_file, |bytes_written| {
+                progress_updater.progress(bytes_written as u64)
             });
+            // Using a BufWriter here doesn't improve performance even on a VM with
+            // spinny disks.
+            if let Err(e) = std::io::copy(&mut file, &mut out_file) {
+                return Err(RipunzipErrors::IOErrorWithContext {
+                    context: format!("Failed to write directory {:?}", out_file.into_inner()),
+                    source: e,
+                });
+            }
+            progress_updater.finish();
         }
-        progress_updater.finish();
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Some(mode) = file.unix_mode() {
-            if let Err(e) =
-                std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode))
-            {
-                return Err(RipunzipErrors::IOErrorWithContext {
-                    context: format!(
-                        "Failed to set permissions {} for {}",
-                        mode,
-                        out_path.display()
-                    ),
-                    source: e,
-                });
+        if !file.is_symlink() {
+            if let Some(mode) = file.unix_mode() {
+                if let Err(e) =
+                    std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode))
+                {
+                    return Err(RipunzipErrors::IOErrorWithContext {
+                        context: format!(
+                            "Failed to set permissions {} for {}",
+                            mode,
+                            out_path.display()
+                        ),
+                        source: e,
+                    });
+                }
             }
         }
     }
@@ -620,6 +655,41 @@ mod tests {
         }
         assert_eq!(read_to_string(b).unwrap(), "Contents of B\n");
         assert_eq!(read_to_string(c).unwrap(), "Contents of C\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_extract_symlink() {
+        let td = tempdir().unwrap();
+        let zf = td.path().join("z.zip");
+        let file = File::create(&zf).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options: FileOptions<ExtendedFileOptions> = FileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(0o755);
+        zip.add_directory::<_, ExtendedFileOptions>("test/", Default::default())
+            .unwrap();
+        zip.start_file("test/a.txt", options.clone()).unwrap();
+        zip.write_all(b"Contents of A\n").unwrap();
+        zip.add_symlink("test/b.txt", "a.txt", options.clone())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let zf = File::open(zf).unwrap();
+        let outdir = td.path().join("outdir");
+        let options = UnzipOptions {
+            output_directory: Some(outdir.clone()),
+            password: None,
+            single_threaded: false,
+            filename_filter: None,
+            progress_reporter: Box::new(NullProgressReporter),
+        };
+        UnzipEngine::for_file(zf).unwrap().unzip(options).unwrap();
+
+        let a = outdir.join("test/a.txt");
+        let b = outdir.join("test/b.txt");
+        assert_eq!(read_to_string(a).unwrap(), "Contents of A\n");
+        assert_eq!(read_to_string(b).unwrap(), "Contents of A\n");
     }
 
     #[test]
