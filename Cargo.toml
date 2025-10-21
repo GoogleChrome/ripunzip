@@ -60,3 +60,7 @@ path = "src/main.rs"
 
 [workspace]
 members = ["test_utils"]
+
+[profile.release]
+codegen-units = 1
+panic = "abort"
