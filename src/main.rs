@@ -8,7 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::{fmt::Write, fs::File, path::PathBuf, sync::RwLock};
+use std::{fmt::Write, path::PathBuf, sync::RwLock};
 
 use clap::{Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -174,8 +174,7 @@ fn unzip(
 }
 
 fn construct_file_engine(file_args: FileArgs) -> Result<UnzipEngine, RipunzipErrors> {
-    let zipfile = File::open(file_args.zipfile)?;
-    UnzipEngine::for_file(zipfile)
+    UnzipEngine::for_file(file_args.zipfile)
 }
 
 fn construct_uri_engine(uri_args: UriArgs) -> Result<UnzipEngine, RipunzipErrors> {

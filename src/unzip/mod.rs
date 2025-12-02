@@ -6,8 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-mod cloneable_seekable_reader;
 mod http_range_reader;
+mod multi_file_seeker;
 mod progress_updater;
 mod seekable_http_reader;
 
@@ -23,9 +23,7 @@ use rayon::prelude::*;
 use zip::{read::ZipFile, ZipArchive};
 
 use crate::{
-    unzip::{
-        cloneable_seekable_reader::CloneableSeekableReader, progress_updater::ProgressUpdater,
-    },
+    unzip::{multi_file_seeker::MultiFileSeeker, progress_updater::ProgressUpdater},
     RipunzipErrors,
 };
 
@@ -84,6 +82,12 @@ impl UnzipProgressReporter for NullProgressReporter {}
 /// possible.
 pub struct UnzipEngine {
     zipfile: Box<dyn UnzipEngineImpl>,
+    /// If we are unzipping a URI and the remote server does not support
+    /// range requests, we download the entire file into a temporary file.
+    /// This field maintains its lifetime.
+    /// It is None if we are unzipping a local file, or a URI that supports
+    /// range requests.
+    _temp_file: Option<tempfile::NamedTempFile>,
     compressed_length: u64,
     directory_creator: DirectoryCreator,
 }
@@ -109,7 +113,7 @@ trait UnzipEngineImpl {
 
 /// Engine which knows how to unzip a file.
 #[derive(Clone)]
-struct UnzipFileEngine(ZipArchive<CloneableSeekableReader<File>>);
+struct UnzipFileEngine(ZipArchive<MultiFileSeeker>);
 
 impl UnzipEngineImpl for UnzipFileEngine {
     fn unzip(
@@ -169,14 +173,16 @@ impl<F: Fn()> UnzipEngineImpl for UnzipUriEngine<F> {
 
 impl UnzipEngine {
     /// Create an unzip engine which knows how to unzip a file.
-    pub fn for_file(mut zipfile: File) -> Result<Self, RipunzipErrors> {
+    pub fn for_file(zipfile_path: PathBuf) -> Result<Self, RipunzipErrors> {
+        let mut zipfile = File::open(&zipfile_path)?;
         // The following line doesn't actually seem to make any significant
         // performance difference.
         // let zipfile = BufReader::new(zipfile);
         let compressed_length = determine_stream_len(&mut zipfile)?;
-        let zipfile = CloneableSeekableReader::new(zipfile);
+        let zipfile = MultiFileSeeker::new(&zipfile_path)?;
         Ok(Self {
             zipfile: Box::new(UnzipFileEngine(ZipArchive::new(zipfile)?)),
+            _temp_file: None,
             compressed_length,
             directory_creator: DirectoryCreator::default(),
         })
@@ -201,34 +207,37 @@ impl UnzipEngine {
             readahead_limit,
             AccessPattern::RandomAccess,
         );
-        let (compressed_length, zipfile): (u64, Box<dyn UnzipEngineImpl>) =
-            match seekable_http_reader {
-                Ok(seekable_http_reader) => (
-                    seekable_http_reader.len(),
-                    Box::new(UnzipUriEngine(
-                        seekable_http_reader.clone(),
-                        ZipArchive::new(seekable_http_reader.create_reader())?,
-                        callback_on_rewind,
-                    )),
-                ),
-                Err(_) => {
-                    // This server probably doesn't support HTTP ranges.
-                    // Let's fall back to fetching the request into a temporary
-                    // file then unzipping.
-                    log::warn!("HTTP(S) server does not support range requests - falling back to fetching whole file.");
-                    let mut response = reqwest::blocking::get(uri)?;
-                    let mut tempfile = tempfile::tempfile()?;
-                    std::io::copy(&mut response, &mut tempfile)?;
-                    let compressed_length = determine_stream_len(&mut tempfile)?;
-                    let zipfile = CloneableSeekableReader::new(tempfile);
-                    (
-                        compressed_length,
-                        Box::new(UnzipFileEngine(ZipArchive::new(zipfile)?)),
-                    )
-                }
-            };
+        let (compressed_length, zipfile_impl, temp_file) = match seekable_http_reader {
+            Ok(seekable_http_reader) => (
+                seekable_http_reader.len(),
+                Box::new(UnzipUriEngine(
+                    seekable_http_reader.clone(),
+                    ZipArchive::new(seekable_http_reader.create_reader())?,
+                    callback_on_rewind,
+                )) as Box<dyn UnzipEngineImpl>,
+                None,
+            ),
+            Err(_) => {
+                // This server probably doesn't support HTTP ranges.
+                // Let's fall back to fetching the request into a temporary
+                // file then unzipping.
+                log::warn!("HTTP(S) server does not support range requests - falling back to fetching whole file.");
+                let mut response = reqwest::blocking::get(uri)?;
+                let mut tempfile = tempfile::NamedTempFile::new()?;
+                std::io::copy(&mut response, &mut tempfile)?;
+                let compressed_length = determine_stream_len(tempfile.as_file_mut())?;
+                let zipfile_reader = MultiFileSeeker::new(tempfile.path())?;
+                (
+                    compressed_length,
+                    Box::new(UnzipFileEngine(ZipArchive::new(zipfile_reader)?))
+                        as Box<dyn UnzipEngineImpl>,
+                    Some(tempfile),
+                )
+            }
+        };
         Ok(Self {
-            zipfile,
+            zipfile: zipfile_impl,
+            _temp_file: temp_file,
             compressed_length,
             directory_creator: DirectoryCreator::default(),
         })
@@ -620,7 +629,6 @@ mod tests {
             let td = tempdir().unwrap();
             let zf = td.path().join("z.zip");
             create_zip_file(&zf, create_a);
-            let zf = File::open(zf).unwrap();
             let old_dir = current_dir().unwrap();
             set_current_dir(td.path()).unwrap();
             let options = UnzipOptions {
@@ -642,7 +650,6 @@ mod tests {
             let td = tempdir().unwrap();
             let zf = td.path().join("z.zip");
             create_zip_file(&zf, create_a);
-            let zf = File::open(zf).unwrap();
             let outdir = td.path().join("outdir");
             let options = UnzipOptions {
                 output_directory: Some(outdir.clone()),
@@ -662,7 +669,6 @@ mod tests {
             let td = tempdir().unwrap();
             let zf = td.path().join("z.zip");
             create_encrypted_zip_file(&zf, create_a);
-            let zf = File::open(zf).unwrap();
             let outdir = td.path().join("outdir");
             let options = UnzipOptions {
                 output_directory: Some(outdir.clone()),
@@ -681,7 +687,6 @@ mod tests {
         let td = tempdir().unwrap();
         let zf = td.path().join("z.zip");
         create_zip_file(&zf, true);
-        let zf = File::open(zf).unwrap();
         let filenames: HashSet<_> = UnzipEngine::for_file(zf).unwrap().list().unwrap().collect();
         assert_eq!(
             filenames,
