@@ -42,8 +42,10 @@ const DEFAULT_SKIP_AHEAD_THRESHOLD: u64 = 2 * 1024 * 1024; // 2MB
 
 /// A hint to the [`SeekableHttpReaderEngine`] about the expected access pattern.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Default)]
 pub(crate) enum AccessPattern {
     /// We expect accesses all over the file.
+    #[default]
     RandomAccess,
     /// We expect accesses starting from the beginning and moving to the end,
     /// though there might be some jumping around if multiple threads are
@@ -51,11 +53,6 @@ pub(crate) enum AccessPattern {
     SequentialIsh,
 }
 
-impl Default for AccessPattern {
-    fn default() -> Self {
-        Self::RandomAccess
-    }
-}
 
 /// Errors that may be returned by a [`SeekableHttpReaderEngine` or `SeekableHttpReader`].
 #[derive(Error, Debug)]
