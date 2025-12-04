@@ -1618,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "ripunzip"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "clap 4.5.39",
  "clap-verbosity-flag",
