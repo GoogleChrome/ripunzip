@@ -87,6 +87,7 @@ fuzz_target!(|input: Inputs| {
         filename_filter: None,
         progress_reporter: Box::new(progress_reporter),
         password: None,
+        thread_pool: None,
     };
     let zipfile = tempdir.path().join("file.zip");
     let mut zip_data = Vec::new();
