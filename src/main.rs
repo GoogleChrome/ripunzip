@@ -126,19 +126,19 @@ fn main() -> Result<(), RipunzipErrors> {
         .filter_level(args.verbose.log_level_filter())
         .init();
 
-    if let Some(threads) = match &args.command {
-        Commands::UnzipFile { unzip_args, .. } | Commands::UnzipUri { unzip_args, .. } => {
-            unzip_args.threads
-        }
-        _ => None,
-    } {
-        if threads > 1 {
-            rayon::ThreadPoolBuilder::new()
+    // Function to create a thread pool based on thread configuration
+fn create_thread_pool(threads: Option<usize>) -> Option<rayon::ThreadPool> {
+    match threads {
+        Some(1) => None, // Single threaded, no thread pool needed
+        Some(threads) => {
+            Some(rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
-                .build_global()
-                .unwrap();
+                .build()
+                .unwrap())
         }
+        None => None, // Use default rayon behavior
     }
+}
 
     match args.command {
         Commands::ListFile { file_args } => list(construct_file_engine(file_args)?),
@@ -146,19 +146,27 @@ fn main() -> Result<(), RipunzipErrors> {
         Commands::UnzipFile {
             file_args,
             unzip_args,
-        } => unzip(
-            construct_file_engine(file_args)?,
-            unzip_args,
-            args.verbose.is_silent(),
-        ),
+        } => {
+            let thread_pool = create_thread_pool(unzip_args.threads);
+            unzip(
+                construct_file_engine(file_args)?,
+                unzip_args,
+                args.verbose.is_silent(),
+                thread_pool,
+            )
+        },
         Commands::UnzipUri {
             uri_args,
             unzip_args,
-        } => unzip(
-            construct_uri_engine(uri_args)?,
-            unzip_args,
-            args.verbose.is_silent(),
-        ),
+        } => {
+            let thread_pool = create_thread_pool(unzip_args.threads);
+            unzip(
+                construct_uri_engine(uri_args)?,
+                unzip_args,
+                args.verbose.is_silent(),
+                thread_pool,
+            )
+        },
     }
 }
 
@@ -166,6 +174,7 @@ fn unzip(
     engine: UnzipEngine,
     unzip_args: UnzipArgs,
     is_silent: bool,
+    thread_pool: Option<rayon::ThreadPool>,
 ) -> Result<(), RipunzipErrors> {
     let filename_filter: Option<Box<dyn FilenameFilter + Sync>> =
         if unzip_args.filenames_to_unzip.is_empty() {
@@ -190,6 +199,7 @@ fn unzip(
         single_threaded: unzip_args.single_threaded || unzip_args.threads == Some(1),
         filename_filter,
         progress_reporter,
+        thread_pool,
     };
     engine.unzip(options)
 }
