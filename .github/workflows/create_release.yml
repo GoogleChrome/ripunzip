@@ -68,7 +68,7 @@ jobs:
       - name: Set up Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install `bininsatll`
+      - name: Install `binstall`
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install `cargo deb`
