@@ -6,6 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+mod consumed_ranges;
 mod http_range_reader;
 mod multi_file_seeker;
 mod progress_updater;

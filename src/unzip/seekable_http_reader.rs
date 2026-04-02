@@ -10,15 +10,16 @@ use std::{
     cmp::min,
     collections::BTreeMap,
     io::{BufReader, ErrorKind, Read, Seek, SeekFrom},
-    ops::Range,
     sync::{Arc, Condvar, Mutex},
 };
 
-use ranges::Ranges;
 use reqwest::blocking::Response;
 use thiserror::Error;
 
-use super::http_range_reader::{self, RangeFetcher};
+use super::{
+    consumed_ranges::CacheCell,
+    http_range_reader::{self, RangeFetcher},
+};
 
 /// This is how much we read from the underlying HTTP stream in a given thread,
 /// before signalling other threads that they may wish to continue with their
@@ -61,38 +62,6 @@ pub(crate) enum Error {
     AcceptRangesNotSupported,
     #[error(transparent)]
     RangeFetcherError(http_range_reader::Error),
-}
-
-/// Some data that we've read from the network, but not yet returned to the
-/// caller.
-struct CacheCell {
-    data: Vec<u8>,
-    bytes_read: Ranges<usize>,
-}
-
-impl CacheCell {
-    fn new(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            bytes_read: Ranges::new(),
-        }
-    }
-
-    fn read(&mut self, range: Range<usize>) -> &[u8] {
-        let new_range = self.bytes_read.clone().union(Ranges::from(range.clone()));
-        self.bytes_read = new_range;
-        &self.data[range]
-    }
-
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn entirely_consumed(&self) -> bool {
-        let data_left_to_read =
-            Ranges::from(0..self.data.len()).difference(self.bytes_read.clone());
-        data_left_to_read.is_empty()
-    }
 }
 
 /// Internal state of the [`SeekableHttpReaderEngine`], in a separate struct
@@ -638,28 +607,7 @@ mod tests {
 
     use crate::unzip::seekable_http_reader::DEFAULT_MAX_BLOCK;
 
-    use super::{AccessPattern, CacheCell, SeekableHttpReaderEngine};
-
-    #[test]
-    fn test_cachecell() {
-        let mut cell = CacheCell::new(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_eq!(cell.len(), 10);
-        assert!(!cell.entirely_consumed());
-
-        assert_eq!(cell.read(0..2), &[0, 1]);
-        assert!(!cell.entirely_consumed());
-
-        assert_eq!(cell.read(3..10), &[3, 4, 5, 6, 7, 8, 9]);
-        assert!(!cell.entirely_consumed());
-
-        // Re-read some already-read bytes - still not entirely consumed.
-        assert_eq!(cell.read(0..2), &[0, 1]);
-        assert!(!cell.entirely_consumed());
-
-        // Finally read that last byte.
-        assert_eq!(cell.read(1..4), &[1, 2, 3]);
-        assert!(cell.entirely_consumed());
-    }
+    use super::{AccessPattern, SeekableHttpReaderEngine};
 
     #[test]
     fn test_unlimited_readahead() {

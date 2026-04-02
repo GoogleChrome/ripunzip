@@ -28,7 +28,6 @@ indicatif = "0.17.2"
 itertools = "0.10.5"
 log = "0.4.17"
 progress-streams = "1.1.0"
-ranges = "0.4.0"
 rayon = "1.6.0"
 regex = "1.10.2"
 reqwest = { version = "0.11.13", features = ["blocking"] }

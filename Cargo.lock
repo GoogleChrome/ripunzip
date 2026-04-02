@@ -1516,12 +1516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ranges"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "350932f7e8b2d0333d2537f42671a837473576c00e128fbee84c819ea08783b5"
-
-[[package]]
 name = "rayon"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1632,7 +1626,6 @@ dependencies = [
  "itertools",
  "log",
  "progress-streams",
- "ranges",
  "rayon",
  "regex",
  "reqwest",
