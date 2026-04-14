@@ -136,3 +136,16 @@ jobs:
             cargo rustdoc --color always -p "$package" -- -D warnings
           done
         env: { RUSTDOCFLAGS: -Dwarnings }
+
+  # Lint dependencies with cargo-deny
+  deny:
+    name: Deny
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall cargo-deny --no-confirm # not supported by dtolnay/install
+
+      - run: cargo deny check
