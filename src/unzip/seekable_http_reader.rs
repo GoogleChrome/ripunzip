@@ -84,9 +84,9 @@ impl CacheCell {
             if unread.start >= range.start && unread.end <= range.end {
                 continue;
             } else if unread.start >= range.start {
-                new_to_read.push(range.end..unread.end);
+                new_to_read.push(range.end.max(unread.start)..unread.end);
             } else if unread.end <= range.end {
-                new_to_read.push(unread.start..range.start);
+                new_to_read.push(unread.start..range.start.min(unread.end));
             } else {
                 new_to_read.push(unread.start..range.start);
                 new_to_read.push(range.end..unread.end);
@@ -661,11 +661,16 @@ mod tests {
         assert_eq!(cell.read(0..2), &[0, 1]);
         assert!(!cell.entirely_consumed());
 
-        assert_eq!(cell.read(3..10), &[3, 4, 5, 6, 7, 8, 9]);
+        // Read some bytes in the middle of the data.
+        assert_eq!(cell.read(3..8), &[3, 4, 5, 6, 7]);
         assert!(!cell.entirely_consumed());
 
         // Re-read some already-read bytes - still not entirely consumed.
-        assert_eq!(cell.read(0..2), &[0, 1]);
+        assert_eq!(cell.read(3..6), &[3, 4, 5]);
+        assert!(!cell.entirely_consumed());
+
+        // Consume the bytes at the end of the data
+        assert_eq!(cell.read(7..10), &[7, 8, 9]);
         assert!(!cell.entirely_consumed());
 
         // Finally read that last byte.
