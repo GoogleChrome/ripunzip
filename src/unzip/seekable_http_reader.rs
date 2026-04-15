@@ -14,7 +14,6 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use ranges::Ranges;
 use reqwest::blocking::Response;
 use thiserror::Error;
 
@@ -67,20 +66,35 @@ pub(crate) enum Error {
 /// caller.
 struct CacheCell {
     data: Vec<u8>,
-    bytes_read: Ranges<usize>,
+    to_read: Vec<Range<usize>>,
 }
 
 impl CacheCell {
     fn new(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            bytes_read: Ranges::new(),
-        }
+        #[allow(clippy::single_range_in_vec_init)]
+        let to_read = vec![0..data.len()];
+
+        Self { data, to_read }
     }
 
     fn read(&mut self, range: Range<usize>) -> &[u8] {
-        let new_range = self.bytes_read.clone().union(Ranges::from(range.clone()));
-        self.bytes_read = new_range;
+        let mut new_to_read = Vec::new();
+
+        for unread in &self.to_read {
+            if unread.start >= range.start && unread.end <= range.end {
+                continue;
+            } else if unread.start >= range.start {
+                new_to_read.push(range.end..unread.end);
+            } else if unread.end <= range.end {
+                new_to_read.push(unread.start..range.start);
+            } else {
+                new_to_read.push(unread.start..range.start);
+                new_to_read.push(range.end..unread.end);
+            }
+        }
+
+        self.to_read = new_to_read;
+
         &self.data[range]
     }
 
@@ -89,9 +103,7 @@ impl CacheCell {
     }
 
     fn entirely_consumed(&self) -> bool {
-        let data_left_to_read =
-            Ranges::from(0..self.data.len()).difference(self.bytes_read.clone());
-        data_left_to_read.is_empty()
+        self.to_read.is_empty()
     }
 }
 
