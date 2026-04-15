@@ -39,6 +39,8 @@ There's also `cargo fuzz` support for comparitive fuzzing against non-parallel u
 to try to spot any unforeseen circumstances where we do anything differently. If you
 change the core unzipping logic please use this.
 
+`cargo-deny` is used to keep dependencies secure and license-compatible. If you change the project's dependencies at all be sure to run `cargo deny check` on your codebase.
+
 #### License and usage notes
 
 This is not an officially supported Google product.
