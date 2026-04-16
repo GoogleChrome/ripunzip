@@ -50,6 +50,8 @@ pub struct UnzipOptions<'a, 'b> {
     pub filename_filter: Option<Box<dyn FilenameFilter + Sync + 'a>>,
     /// An object to receive notifications of unzip progress.
     pub progress_reporter: Box<dyn UnzipProgressReporter + Sync + 'b>,
+    /// Optional custom thread pool for parallel execution
+    pub thread_pool: Option<rayon::ThreadPool>,
 }
 
 /// A trait of types which wish to hear progress updates on the unzip.
@@ -312,20 +314,44 @@ fn unzip_serial_or_parallel<'a, T: Read + Seek + 'a>(
             // On a device which is CPU-bound or IO-bound (rather than network
             // bound) that's beneficial because we can start to decompress
             // and write data to disk as soon as it arrives from the network.
-            (0..len)
-                .par_bridge()
-                .map(|i| {
-                    extract_file_by_index(
-                        &get_ziparchive_clone,
-                        i,
-                        &options.output_directory,
-                        &options.password,
-                        progress_reporter,
-                        directory_creator,
-                    )
-                })
-                .filter_map(Result::err)
-                .collect()
+            let range_iter = 0..len;
+
+            match &options.thread_pool {
+                Some(pool) => {
+                    pool.install(|| {
+                        range_iter
+                            .par_bridge()
+                            .map(|i| {
+                                extract_file_by_index(
+                                    &get_ziparchive_clone,
+                                    i,
+                                    &options.output_directory,
+                                    &options.password,
+                                    progress_reporter,
+                                    directory_creator,
+                                )
+                            })
+                            .filter_map(Result::err)
+                            .collect()
+                    })
+                }
+                None => {
+                    range_iter
+                        .par_bridge()
+                        .map(|i| {
+                            extract_file_by_index(
+                                &get_ziparchive_clone,
+                                i,
+                                &options.output_directory,
+                                &options.password,
+                                progress_reporter,
+                                directory_creator,
+                            )
+                        })
+                        .filter_map(Result::err)
+                        .collect()
+                }
+            }
         }
         (Some(filename_filter), single_threaded) => {
             // If we have a filename filter, an easy thing would be to
@@ -637,6 +663,7 @@ mod tests {
                 single_threaded: false,
                 filename_filter,
                 progress_reporter: Box::new(NullProgressReporter),
+                thread_pool: None,
             };
             UnzipEngine::for_file(zf).unwrap().unzip(options).unwrap();
             set_current_dir(old_dir).unwrap();
@@ -657,6 +684,7 @@ mod tests {
                 single_threaded: false,
                 filename_filter,
                 progress_reporter: Box::new(NullProgressReporter),
+                thread_pool: None,
             };
             UnzipEngine::for_file(zf).unwrap().unzip(options).unwrap();
             check_files_exist(&outdir, create_a);
@@ -676,6 +704,7 @@ mod tests {
                 single_threaded: false,
                 filename_filter,
                 progress_reporter: Box::new(NullProgressReporter),
+                thread_pool: None,
             };
             UnzipEngine::for_file(zf).unwrap().unzip(options).unwrap();
             check_files_exist(&outdir, create_a);
@@ -717,6 +746,7 @@ mod tests {
                 single_threaded: false,
                 filename_filter,
                 progress_reporter: Box::new(NullProgressReporter),
+                thread_pool: None,
             };
             UnzipEngine::for_uri(&server.url("/foo").to_string(), None, || {})
                 .unwrap()
@@ -740,6 +770,7 @@ mod tests {
             single_threaded: false,
             filename_filter: None,
             progress_reporter: Box::new(NullProgressReporter),
+            thread_pool: None,
         };
         UnzipEngine::for_uri(&server.url("/foo").to_string(), None, || {})
             .unwrap()
