@@ -435,11 +435,11 @@ fn extract_file_inner<R: Read>(
     };
     progress_reporter.extraction_starting(&display_name);
     log::debug!(
-        "Start extract of file at {:x}, length {:x}, name {}",
-        file.data_start(),
+        "Start extract of file with length {:x}, name {}",
         file.compressed_size(),
         display_name
     );
+
     if file.name().ends_with('/') {
         directory_creator.create_dir_all(&out_path)?;
     } else {
@@ -498,12 +498,13 @@ fn extract_file_inner<R: Read>(
             }
         }
     }
+
     log::debug!(
-        "Finished extract of file at {:x}, length {:x}, name {}",
-        file.data_start(),
+        "Finished extract of file with length {:x}, name {}",
         file.compressed_size(),
         display_name
     );
+
     progress_reporter.extraction_finished(&display_name);
     Ok(())
 }
@@ -579,7 +580,8 @@ mod tests {
         let options = FileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
             .unix_permissions(0o755)
-            .with_deprecated_encryption("1Password".as_ref());
+            .with_deprecated_encryption("1Password".as_ref())
+            .unwrap();
         create_zip(file, include_a_txt, Some(options))
     }
 
